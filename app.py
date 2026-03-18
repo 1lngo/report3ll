@@ -842,6 +842,9 @@ def main():
 
                 st.dataframe(df.tail(10))
 
+                # 设置默认标的名称
+                symbol_selected = "UPLOADED"
+
                 # Kronos prediction settings
                 st.markdown("---")
                 st.subheader("⚙️ Kronos 预测设置")

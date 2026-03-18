@@ -36,7 +36,7 @@ def create_features(prices: pd.Series, window: int = 20) -> pd.DataFrame:
     features['returns_10d'] = prices.pct_change(10)
     features['returns_20d'] = prices.pct_change(20)
 
-    # 移动平均线
+    # 移动平均线相对位置
     features['ma_5'] = prices / prices.rolling(5).mean() - 1
     features['ma_10'] = prices / prices.rolling(10).mean() - 1
     features['ma_20'] = prices / prices.rolling(20).mean() - 1
@@ -46,14 +46,29 @@ def create_features(prices: pd.Series, window: int = 20) -> pd.DataFrame:
     features['volatility_10d'] = features['returns_1d'].rolling(10).std()
     features['volatility_20d'] = features['returns_1d'].rolling(20).std()
 
-    # 价格位置 (相对于近期高低点)
+    # 价格位置 (相对于近期高低点，0-1之间)
     features['price_position'] = (prices - prices.rolling(20).min()) / (prices.rolling(20).max() - prices.rolling(20).min() + 1e-10)
 
     # 动量
     features['momentum_10d'] = prices.pct_change(10)
     features['momentum_20d'] = prices.pct_change(20)
 
-    # 成交量特征 (如果有)
+    # 趋势强度 (RSI简化版)
+    gains = features['returns_1d'].clip(lower=0)
+    losses = (-features['returns_1d']).clip(lower=0)
+    avg_gains = gains.rolling(14).mean()
+    avg_losses = losses.rolling(14).mean()
+    features['rsi_proxy'] = avg_gains / (avg_gains + avg_losses + 1e-10)
+
+    # MACD简化版
+    ema_12 = prices.ewm(span=12).mean()
+    ema_26 = prices.ewm(span=26).mean()
+    features['macd'] = (ema_12 / ema_26 - 1) * 100
+
+    # 布林带位置
+    ma_20 = prices.rolling(20).mean()
+    std_20 = prices.rolling(20).std()
+    features['bollinger_position'] = (prices - ma_20) / (2 * std_20 + 1e-10)
 
     return features.dropna()
 
@@ -63,7 +78,7 @@ def lightweight_forecast(
     symbols: List[str] = None,
     lookback: int = 60,
     pred_len: int = 7,
-    model_type: str = "ridge"
+    model_type: str = "rf"  # 默认用Random Forest，更准确
 ) -> Dict[str, Any]:
     """
     使用轻量级模型预测未来收益（无PyTorch依赖）
@@ -117,19 +132,18 @@ def lightweight_forecast(
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
 
-            # 训练模型
-            if model_type == "rf":
-                model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42, n_jobs=-1)
-            else:
+            # 训练模型 - 默认使用Random Forest，捕捉非线性关系
+            if model_type == "ridge":
                 model = Ridge(alpha=1.0)
+            else:
+                model = RandomForestRegressor(n_estimators=100, max_depth=10, min_samples_split=5, random_state=42, n_jobs=-1)
 
             model.fit(X_scaled, y)
 
-            # 预测
-            latest_features = features.iloc[-lookback:]
+            # 预测 - 只用最新的一行特征预测未来收益
+            latest_features = features.iloc[[-1]]  # 取最后一行，保持DataFrame格式
             latest_scaled = scaler.transform(latest_features)
-            predictions = model.predict(latest_scaled)
-            pred_cum_return = np.mean(predictions[-5:])  # 取最近几个预测的平均
+            pred_cum_return = model.predict(latest_scaled)[0]  # 预测未来pred_len天的累计收益
 
             # 计算日均收益
             pred_daily_return = (1 + pred_cum_return) ** (1/pred_len) - 1
